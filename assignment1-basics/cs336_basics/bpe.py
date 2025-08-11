@@ -6,11 +6,19 @@ BPE class functions:
 """
 import os
 import regex as re
+import logging
 from collections import defaultdict, Counter
 from typing import BinaryIO
 from multiprocessing import Pool, cpu_count
 from tqdm import tqdm
 import time
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 class BPETokenizer:
     def __init__(self):
@@ -125,7 +133,7 @@ class BPETokenizer:
         Using text data to train a BPE tokenizer.
         """
         # 1) pre-tokenization
-        print("Pre-tokenization started...")
+        logger.info("Pre-tokenization started...")
         start_time = time.time()
         num_processes = max(1, min(cpu_count(), 16))  # Limit to 16 processes
         with open(input_path, 'rb') as f:
@@ -145,8 +153,8 @@ class BPETokenizer:
                     total = len(tasks)
                 ):
                     word_count.update(c)  # Using local Counter to aggregate word frequencies
-        print(f"Pre-tokenization completed in {time.time() - start_time:.2f} seconds.")
-        print("Building pre-tokens' frequency dictionary...")
+        logger.info(f"Pre-tokenization completed in {time.time() - start_time:.2f} seconds.")
+        logger.info("Building pre-tokens' frequency dictionary...")
         start_time = time.time()
         for i, (word, freq) in tqdm(
                 enumerate(word_count.items()),
@@ -154,10 +162,10 @@ class BPETokenizer:
             ):
             self.index_word[i] = [bytes([b]) for b in word.encode('utf-8')]
             self.word_freq[i] = freq
-        print(f'Pre-tokens frequency dictionary built in {time.time() - start_time:.2f} seconds.')
+        logger.info(f'Pre-tokens frequency dictionary built in {time.time() - start_time:.2f} seconds.')
         
         # 2) initial pair frequency & pair to ids
-        print("Initial pair frequency calculation started...")
+        logger.info("Initial pair frequency calculation started...")
         start_time = time.time()
         for idx, word in tqdm(
                 self.index_word.items(),
@@ -167,10 +175,10 @@ class BPETokenizer:
             for i in range(len(word) - 1):
                 pair = (word[i], word[i + 1])
                 self._add_pair(pair, idx, freq)
-        print(f"Initial pair frequency calculation completed in {time.time() - start_time:.2f} seconds.")
+        logger.info(f"Initial pair frequency calculation completed in {time.time() - start_time:.2f} seconds.")
 
         # 3) merges
-        print("Merging pairs started...")
+        logger.info("Merging pairs started...")
         start_time = time.time()
         num_merges = vocab_size - len(special_tokens) - 256  # Calculate number of merges needed
         for num in tqdm(range(num_merges)):
@@ -205,12 +213,12 @@ class BPETokenizer:
                 for j in range(len(new_word) - 1):  # Add new pairs
                     self._add_pair((new_word[j], new_word[j + 1]), idx, freq)
                 self.index_word[idx] = new_word
-        print(f"Merging pairs completed in {time.time() - start_time:.2f} seconds.")
+        logger.info(f"Merging pairs completed in {time.time() - start_time:.2f} seconds.")
 
         # 4) build vocabulary
         self.vocab = {i : special_tokens[i].encode('utf-8') for i in range(len(special_tokens))}
         self.vocab.update({i + len(special_tokens): bytes([i]) for i in range(256)})
         self.vocab.update({i + len(special_tokens) + 256: pair[0] + pair[1] for i, pair in enumerate(self.merges)})
-        print("Vocabulary built successfully.")
+        logger.info("Vocabulary built successfully.")
 
         return self.vocab, self.merges
