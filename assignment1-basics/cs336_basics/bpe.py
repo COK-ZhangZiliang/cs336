@@ -126,7 +126,7 @@ class BPETokenizer:
             self, 
             input_path: str | os.PathLike,
             vocab_size: int,
-            special_tokens: list[str],
+            special_tokens: list[str] = ["<|endoftext|>"],
             split_token: str = "<|endoftext|>"
         ) -> tuple[dict[int, bytes], list[tuple[bytes, bytes]]]:
         """
@@ -186,6 +186,8 @@ class BPETokenizer:
             # choose lexicographically greater one.
             # But the lexicographical order is decided by the first pair and then the second pair, 
             # rather than the concatenation of two pairs!!!
+            if not self.pair_freq:
+                break
             pair = max(self.pair_freq, key=lambda x: (self.pair_freq[x], x))  
             a = self.pair_freq[pair]
             self.merges.append(pair)
