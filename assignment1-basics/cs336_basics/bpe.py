@@ -11,7 +11,7 @@ from collections import defaultdict, Counter
 from typing import BinaryIO, Iterable, Iterator
 from multiprocessing import Pool, cpu_count
 from tqdm import tqdm
-import time, json, copy
+import time, json
 
 # Configure logging
 logging.basicConfig(
@@ -25,7 +25,7 @@ class BPETokenizer:
             self, 
             vocab: dict[int, bytes] | None = None,
             merges: list[tuple[bytes, bytes]] | None = None,
-            special_tokens: list[str] = ["<|endoftext|>"],
+            special_tokens: list[str] | None = None,
             trained: bool = False
     ) -> None:
         """
@@ -39,20 +39,20 @@ class BPETokenizer:
         self.pair_to_ids: defaultdict[tuple[bytes, bytes], set[int]] = defaultdict(set)  # (First Symbols, Second Symbols) -> Set of Indices
         self.pair_to_freq: defaultdict[tuple[bytes, bytes], int] = defaultdict(int)  # (First Symbols, Second Symbols) -> Pair Frequency
         self.PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""  # Regex pattern for pre-tokenization
-        self.special_tokens = special_tokens
 
         if trained:
+            self.special_tokens = special_tokens
+            self.merge_to_idx = {merge: idx for idx, merge in enumerate(self.merges)}  # For fast lookup during encoding
             self.idx_to_token = vocab
             self.token_to_idx = {tok: idx for idx, tok in vocab.items()}
-            for sp_tok in special_tokens:
-                sp_tok.encode("utf-8")
-                if sp_tok not in self.token_to_idx:
-                    idx = len(self.idx_to_token)
-                    self.idx_to_token[idx] = sp_tok
-                    self.token_to_idx[sp_tok] = idx
-                    self.vocab[idx] = sp_tok
-            self.merges_set = set(self.merges)
-
+            if special_tokens:
+                for sp_tok in special_tokens:
+                    sp_tok.encode("utf-8")
+                    if sp_tok not in self.token_to_idx:
+                        idx = len(self.idx_to_token)
+                        self.idx_to_token[idx] = sp_tok
+                        self.token_to_idx[sp_tok] = idx
+                        self.vocab[idx] = sp_tok
 
 
     @staticmethod
@@ -184,7 +184,7 @@ class BPETokenizer:
                 enumerate(word_count.items()),
                 total=len(word_count)
             ):
-            self.idx_to_word[i] = [bytes([b]) for b in word.encode('utf-8')]
+            self.idx_to_word[i] = [bytes([b]) for b in word.encode('utf-8')]  # hint: bytes(b) will return b zero bytes
             self.word_to_freq[i] = freq
         logger.info(f'Pre-tokens frequency dictionary built in {time.time() - start_time:.2f} seconds.')
         
@@ -255,46 +255,66 @@ class BPETokenizer:
 
 
     @classmethod
-    def init_by_files(
+    def from_files(
             cls, 
             vocab_filepath: str | os.PathLike, 
             merges_filepath: str | os.PathLike, 
-            special_tokens: list[str] = ["<|endoftext|>"]
+            special_tokens: list[str] | None = None
         ) -> "BPETokenizer":
         """
         Using vocab file & merges file to initial a bpe tokenizer
         """
         with open(vocab_filepath, "r", encoding="utf-8") as f:
-            token_to_idx = json.loads(f)
+            token_to_idx = json.load(f)
         vocab = {}
         for token, idx in token_to_idx.items():
-            vocab = {idx, token.encode("utf-8")}
+            vocab[idx] = token.encode("utf-8")
         merges = []
         with open(merges_filepath, "r", encoding="utf-8") as f:
             for line in f:
                 a, b = line.strip().split(" ")
                 merges.append((a.encode("utf-8"), b.encode("utf-8")))
 
-        return cls(vocab, merges, special_tokens=special_tokens, trained=True)
+        return cls(vocab, merges, special_tokens, trained=True)
     
 
     def encode(self, text: str) -> list[int]:
         # pre-tokenizaiton
         b_words = []
-        for match in re.finditer(self.PAT, text):
-            word = match.group(0)   
-            if word in self.special_tokens:
-                b_words.append([word.encode('utf-8')])
-            b_words.append([bytes[b] for b in word.encode('utf-8')])
+        if self.special_tokens:
+            escaped_tokens = [re.escape(tok) for tok in self.special_tokens]
+            escaped_tokens.sort(key=len, reverse=True)  # Longer special tokens first to handle nested special tokens
+            pattern = f"({'|'.join(escaped_tokens)})"  # Spilt by special tokens, but keep them
+            text = re.split(pattern, text)
+        else:
+            text = [text]
+        for t in text:
+            if self.special_tokens is not None and t in self.special_tokens:
+                b_words.append([t.encode('utf-8')])
+            else:
+                for match in re.finditer(self.PAT, t):
+                    word = match.group(0)
+                    b_words.append([bytes([b]) for b in word.encode('utf-8')])
+        
         
         # merge
         for w in b_words:
-            i = 0
-            while i < len(w) - 1:
-                if (w[i], w[i + 1]) in self.merges_set:
-                    w[i:i+2] = [w[i] + w[i + 1]]
-                    i = max(i - 1, 0)  # At most affect the previous one
-                else:
+            while True:
+                merge, merge_idx = None, len(self.merges) + 10
+                # Find the highest priority merge in the current word
+                for i in range(len(w) - 1):
+                    if (w[i], w[i + 1]) in self.merge_to_idx:
+                        if merge is None or self.merge_to_idx[(w[i], w[i + 1])] < merge_idx:
+                            merge = (w[i], w[i + 1])
+                            merge_idx = self.merge_to_idx[merge]
+                if merge is None:
+                    break
+                # Perform the merge
+                i = 0
+                while i < len(w) - 1:
+                    if w[i] == merge[0] and w[i + 1] == merge[1]:
+                        w[i] = w[i] + w[i + 1]
+                        del w[i + 1]
                     i += 1
         
         return [self.token_to_idx[tok] for w in b_words for tok in w]
