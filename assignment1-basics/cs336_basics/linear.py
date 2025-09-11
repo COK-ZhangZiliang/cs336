@@ -15,7 +15,8 @@ class Linear(nn.Module):
     ) -> None:
         super().__init__()
         self.W = nn.Parameter(
-            torch.empty(out_features, in_features, device=device, dtype=dtype)
+            torch.empty(out_features, in_features, device=device, dtype=dtype), 
+            requires_grad=True
         )
         # init w
         sigma = (2.0 / (in_features + out_features)) ** 0.5
